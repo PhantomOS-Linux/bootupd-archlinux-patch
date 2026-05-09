@@ -1,0 +1,344 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 7019c1f..403301f 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -11,6 +11,25 @@ dependencies = [
+  "memchr",
+ ]
+ 
++[[package]]
++name = "alpm"
++version = "5.0.2"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "4c7b56a77dc29bbe3c1d2b2a073200b7a09ed0a5d0b421315e915abdee4e1f2b"
++dependencies = [
++ "alpm-sys",
++ "bitflags 2.11.0",
++]
++
++[[package]]
++name = "alpm-sys"
++version = "5.0.1"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2802ef5d74e47cceda08d0d583c69be2595a5d25e2d6eef349b5e5b5ed4560e9"
++dependencies = [
++ "pkg-config",
++]
++
+ [[package]]
+ name = "ambient-authority"
+ version = "0.0.2"
+@@ -197,6 +216,7 @@ dependencies = [
+ name = "bootupd"
+ version = "0.2.34"
+ dependencies = [
++ "alpm",
+  "anyhow",
+  "bootc-internal-blockdev",
+  "bootc-internal-utils",
+diff --git a/Cargo.toml b/Cargo.toml
+index 4ce21e7..baabe4b 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -20,6 +20,7 @@ name = "bootupd"
+ path = "src/main.rs"
+ 
+ [dependencies]
++alpm = "5.0.2"
+ anyhow = "1.0"
+ bootc-internal-blockdev = "0.2.0"
+ bootc-internal-utils = "0.1.0"
+diff --git a/src/bios.rs b/src/bios.rs
+index f341f99..79f17dd 100644
+--- a/src/bios.rs
++++ b/src/bios.rs
+@@ -15,7 +15,7 @@ use crate::model::*;
+ use crate::packagesystem;
+ 
+ // grub2-install file path
+-pub(crate) const GRUB_BIN: &str = "usr/sbin/grub2-install";
++pub(crate) const GRUB_BIN: &str = "usr/bin/grub-install";
+ 
+ #[cfg(target_arch = "powerpc64")]
+ fn target_device(device: &Device) -> Result<String> {
+@@ -152,10 +152,10 @@ impl Component for Bios {
+     // - Remove symlink "/boot/grub2/grub.cfg"
+     // - Replace "/boot/grub2/grub.cfg" symlink with new static "grub.cfg"
+     fn migrate_static_grub_config(&self, sysroot_path: &str, destdir: &openat::Dir) -> Result<()> {
+-        let grub = "boot/grub2";
++        let grub = "boot/grub";
+         // sysroot_path is /, destdir is Dir of /
+         let grub_config_path = Utf8PathBuf::from(sysroot_path).join(grub);
+-        let grub_config_dir = destdir.sub_dir(grub).context("Opening boot/grub2")?;
++        let grub_config_dir = destdir.sub_dir(grub).context("Opening boot/grub")?;
+ 
+         let grub_config = grub_config_path.join(grubconfigs::GRUBCONFIG);
+ 
+diff --git a/src/bootupd.rs b/src/bootupd.rs
+index e01ce92..d77c52f 100644
+--- a/src/bootupd.rs
++++ b/src/bootupd.rs
+@@ -737,8 +737,8 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
+     // Remount /boot read write just for this unit (we are called in a slave mount namespace by systemd)
+     ensure_writable_boot()?;
+ 
+-    let grub_config_dir = PathBuf::from("/boot/grub2");
+-    let dirfd = openat::Dir::open(&grub_config_dir).context("Opening /boot/grub2")?;
++    let grub_config_dir = PathBuf::from("/boot/grub");
++    let dirfd = openat::Dir::open(&grub_config_dir).context("Opening /boot/grub")?;
+ 
+     // We mark the bootloader as BLS capable to disable the ostree-grub2 logic.
+     // We can do that as we know that we are run after the bootloader has been
+@@ -747,10 +747,10 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
+     // manually overwrites the (soon) static GRUB config by calling `grub2-mkconfig`.
+     // We need this until we can rely on ostree-grub2 being removed from the image.
+     println!("Marking bootloader as BLS capable...");
+-    _ = File::create("/boot/grub2/.grub2-blscfg-supported");
++    _ = File::create("/boot/grub/.grub2-blscfg-supported");
+ 
+     // Migrate /boot/grub2/grub.cfg to a static GRUB config if it is a symlink
+-    let grub_config_filename = PathBuf::from("/boot/grub2/grub.cfg");
++    let grub_config_filename = PathBuf::from("/boot/grub/grub.cfg");
+     match dirfd.read_link("grub.cfg") {
+         Err(_) => {
+             println!(
+@@ -766,7 +766,7 @@ pub(crate) fn client_run_migrate_static_grub_config() -> Result<()> {
+             current_config.push(path);
+ 
+             // Backup the current GRUB config which is hopefully working right now
+-            let backup_config = PathBuf::from("/boot/grub2/grub.cfg.backup");
++            let backup_config = PathBuf::from("/boot/grub/grub.cfg.backup");
+             println!(
+                 "Creating a backup of the current GRUB config '{}' in '{}'...",
+                 current_config.display(),
+diff --git a/src/grub2/grub-static-efi.cfg b/src/grub2/grub-static-efi.cfg
+index 3d552c3..8b0f5b7 100644
+--- a/src/grub2/grub-static-efi.cfg
++++ b/src/grub2/grub-static-efi.cfg
+@@ -13,11 +13,11 @@ else
+     search --label boot --set prefix --no-floppy
+   fi
+ fi
+-if [ -d ($prefix)/grub2 ]; then
+-  set prefix=($prefix)/grub2
++if [ -d ($prefix)/grub ]; then
++  set prefix=($prefix)/grub
+   configfile $prefix/grub.cfg
+ else
+-  set prefix=($prefix)/boot/grub2
++  set prefix=($prefix)/boot/grub
+   configfile $prefix/grub.cfg
+ fi
+ boot
+diff --git a/src/grub2/grub-static-pre.cfg b/src/grub2/grub-static-pre.cfg
+index a092008..8441bf7 100644
+--- a/src/grub2/grub-static-pre.cfg
++++ b/src/grub2/grub-static-pre.cfg
+@@ -2,7 +2,7 @@
+ # Changes:
+ #   - Dropped Ignition glue, that can be injected into platform.cfg
+ # petitboot doesn't support -e and doesn't support an empty path part
+-if [ -d (md/md-boot)/grub2 ]; then
++if [ -d (md/md-boot)/grub ]; then
+   # fcct currently creates /boot RAID with superblock 1.0, which allows
+   # component partitions to be read directly as filesystems.  This is
+   # necessary because transposefs doesn't yet rerun grub2-install on BIOS,
+@@ -19,7 +19,7 @@ if [ -d (md/md-boot)/grub2 ]; then
+   #    future module loads to come from the RAID, so we reset $prefix.
+   #    (On UEFI, the stub grub.cfg has already set $prefix properly.)
+   set boot=md/md-boot
+-  set prefix=($boot)/grub2
++  set prefix=($boot)/grub
+ else
+   if [ -f ${config_directory}/bootuuid.cfg ]; then
+     source ${config_directory}/bootuuid.cfg
+diff --git a/src/grubconfigs.rs b/src/grubconfigs.rs
+index 65196c3..580237b 100644
+--- a/src/grubconfigs.rs
++++ b/src/grubconfigs.rs
+@@ -12,7 +12,7 @@ use openat_ext::OpenatDirExt;
+ use crate::freezethaw::fsfreeze_thaw_cycle;
+ 
+ /// The subdirectory of /boot we use
+-pub(crate) const GRUB2DIR: &str = "grub2";
++pub(crate) const GRUB2DIR: &str = "grub";
+ const CONFIGDIR: &str = "/usr/lib/bootupd/grub2-static";
+ const DROPINDIR: &str = "configs.d";
+ // The related grub files
+@@ -148,7 +148,7 @@ fn write_grubenv(grubdir: &openat::Dir) -> Result<()> {
+     if grubdir.exists(GRUBENV)? {
+         return Ok(());
+     }
+-    let editenv = Path::new("/usr/bin/grub2-editenv");
++    let editenv = Path::new("/usr/bin/grub-editenv");
+     if !editenv.exists() {
+         anyhow::bail!("Failed to find {:?}", editenv);
+     }
+@@ -200,25 +200,25 @@ mod tests {
+         let td = tempfile::tempdir()?;
+         let tdp = td.path();
+         let td = openat::Dir::open(tdp)?;
+-        std::fs::create_dir_all(tdp.join("boot/grub2"))?;
++        std::fs::create_dir_all(tdp.join("boot/grub"))?;
+         std::fs::create_dir_all(tdp.join("boot/efi/EFI/BOOT"))?;
+         std::fs::create_dir_all(tdp.join("boot/efi/EFI/fedora"))?;
+         install(&td, None, Some("fedora"), false).unwrap();
+ 
+-        assert!(td.exists("boot/grub2/grub.cfg")?);
++        assert!(td.exists("boot/grub/grub.cfg")?);
+         assert!(td.exists("boot/efi/EFI/fedora/grub.cfg")?);
+         Ok(())
+     }
+     #[test]
+     fn test_write_grubenv() -> Result<()> {
+         // Skip this test if grub2-editenv is not installed
+-        let editenv = Path::new("/usr/bin/grub2-editenv");
++        let editenv = Path::new("/usr/bin/grub-editenv");
+         if !editenv.try_exists()? {
+             return Ok(());
+         }
+         let td = tempfile::tempdir()?;
+         let tdp = td.path();
+-        let grub = tdp.join("boot/grub2");
++        let grub = tdp.join("boot/grub");
+         std::fs::create_dir_all(&grub)?;
+         let td = openat::Dir::open(&grub)?;
+         write_grubenv(&td)?;
+diff --git a/src/packagesystem.rs b/src/packagesystem.rs
+index f20e5e8..7061d21 100644
+--- a/src/packagesystem.rs
++++ b/src/packagesystem.rs
+@@ -1,6 +1,5 @@
+ use std::cmp::Ordering;
+ use std::collections::{BTreeMap, BTreeSet};
+-use std::io::Write;
+ use std::path::Path;
+ 
+ use anyhow::{bail, Context, Result};
+@@ -9,7 +8,6 @@ use serde::{Deserialize, Serialize};
+ use uapi_version::Version;
+ 
+ use crate::model::*;
+-use crate::ostreeutil;
+ 
+ #[derive(Serialize, Deserialize, Clone, Debug, Eq, Hash, PartialEq)]
+ pub(crate) struct Module {
+@@ -78,7 +76,96 @@ fn rpm_parse_metadata(stdout: &[u8]) -> Result<ContentMetadata> {
+     })
+ }
+ 
+-/// Query the rpm database and list the package and build times.
++mod archlinux {
++    use super::*;
++    use alpm::Alpm;
++
++    fn packages_to_content_metadata<'a>(
++        packages: impl IntoIterator<Item = &'a alpm::Package>,
++    ) -> Result<ContentMetadata> {
++        let mut timestamps = BTreeSet::new();
++        let mut version = String::new();
++        let mut and_x_more = 0;
++        let versions = packages.into_iter()
++            .map(|pkg| {
++                let timestamp = DateTime::from_timestamp(pkg.build_date(), 0)
++                    .ok_or(anyhow::Error::msg("alpm: failed to get a valid build date"))?;
++                timestamps.insert(timestamp);
++
++                if version.is_empty() {
++                    version.push_str(pkg.version().as_str());
++                } else {
++                    and_x_more += 1;
++                }
++
++                Ok(Module {
++                    name: pkg.name().to_string(),
++                    rpm_evr: pkg.version().to_string()
++                })
++            })
++            .collect::<Result<Vec<Module>>>()?;
++        if versions.is_empty() {
++            bail!("No packages were found");
++        }
++        let versions = Some(versions);
++        
++        if and_x_more > 0 {
++            version.push_str(&format!(" and {} more", and_x_more));
++        }
++
++        // SAFETY: pkgs has at least one element, as checked above
++        let timestamp = *timestamps
++            .last()
++            .unwrap();
++        Ok(ContentMetadata { timestamp, version, versions })
++    }
++
++    fn find_packages<T>(
++        db: &alpm::Db,
++        paths: impl IntoIterator<Item = T>,
++    ) -> Result<ContentMetadata>
++    where
++        T: AsRef<Path>,
++    {
++        let paths = paths
++            .into_iter()
++            .map(|path| {
++                let canonicalized = path.as_ref().canonicalize()?;
++                let path_str = canonicalized.to_string_lossy().to_string();
++                let s = match path_str.starts_with('/') {
++                    true => &path_str[1..],
++                    false => &path_str,
++                };
++                Ok(s.to_string())
++            })
++            .collect::<Result<Vec<String>>>()?;
++        println!("Query for: {:?}", paths);
++        let mut packages = Vec::new();
++        for package in db.pkgs() {
++            let files = package.files();
++            for path in &paths {
++                if files.contains(path.as_str()).is_some() {
++                    packages.push(package);
++                }
++            }
++        }
++        packages_to_content_metadata(packages)
++    }
++
++    /// Query the alpm database and list the package and build times.
++    pub(crate) fn query_files_alpm<T>(
++        sysroot_path: &str,
++        paths: impl IntoIterator<Item = T>,
++    ) -> Result<ContentMetadata>
++    where
++        T: AsRef<Path>,
++    {
++        let handle = Alpm::new(sysroot_path, "/var/lib/pacman")?;
++        let db = handle.localdb();
++        find_packages(db, paths)
++    }
++}
++
+ pub(crate) fn query_files<T>(
+     sysroot_path: &str,
+     paths: impl IntoIterator<Item = T>,
+@@ -86,19 +173,7 @@ pub(crate) fn query_files<T>(
+ where
+     T: AsRef<Path>,
+ {
+-    let mut c = ostreeutil::rpm_cmd(sysroot_path)?;
+-    c.args(["-q", "--queryformat", "%{nevra},%{buildtime} ", "-f"]);
+-    for arg in paths {
+-        c.arg(arg.as_ref());
+-    }
+-
+-    let rpmout = c.output()?;
+-    if !rpmout.status.success() {
+-        std::io::stderr().write_all(&rpmout.stderr)?;
+-        bail!("Failed to invoke rpm -qf");
+-    }
+-
+-    rpm_parse_metadata(&rpmout.stdout)
++    archlinux::query_files_alpm(sysroot_path, paths)
+ }
+ 
+ fn split_name_version(input: &str) -> Option<(String, String)> {
