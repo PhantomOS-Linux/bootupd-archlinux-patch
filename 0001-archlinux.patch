@@ -205,7 +205,7 @@ index 65196c3..580237b 100644
          let td = openat::Dir::open(&grub)?;
          write_grubenv(&td)?;
 diff --git a/src/packagesystem.rs b/src/packagesystem.rs
-index f20e5e8..7061d21 100644
+index f20e5e8..9d1a797 100644
 --- a/src/packagesystem.rs
 +++ b/src/packagesystem.rs
 @@ -1,6 +1,5 @@
@@ -223,7 +223,7 @@ index f20e5e8..7061d21 100644
  
  #[derive(Serialize, Deserialize, Clone, Debug, Eq, Hash, PartialEq)]
  pub(crate) struct Module {
-@@ -78,7 +76,96 @@ fn rpm_parse_metadata(stdout: &[u8]) -> Result<ContentMetadata> {
+@@ -78,7 +76,131 @@ fn rpm_parse_metadata(stdout: &[u8]) -> Result<ContentMetadata> {
      })
  }
  
@@ -231,6 +231,40 @@ index f20e5e8..7061d21 100644
 +mod archlinux {
 +    use super::*;
 +    use alpm::Alpm;
++    use std::fs;
++    use std::io::BufRead;
++
++    fn get_pacman_dbpath(sysroot_path: &str) -> Result<String> {
++        let pacman_conf = std::path::Path::new(sysroot_path)
++            .join("etc/pacman.conf");
++        
++        if !pacman_conf.exists() {
++            return Ok("/var/lib/pacman".to_string());
++        }
++
++        let file = fs::File::open(&pacman_conf)
++            .context(format!("Failed to open pacman config: {}", pacman_conf.display()))?;
++        let reader = std::io::BufReader::new(file);
++
++        for line in reader.lines() {
++            let line = line?;
++            let trimmed = line.trim();
++            
++            // Skip comments and empty lines
++            if trimmed.is_empty() || trimmed.starts_with('#') {
++                continue;
++            }
++            
++            if trimmed.starts_with("DBPath") {
++                if let Some(value) = trimmed.split('=').nth(1) {
++                    let path = value.trim().trim_matches('"').trim_matches('\'');
++                    return Ok(path.to_string());
++                }
++            }
++        }
++
++        Ok("/var/lib/pacman".to_string())
++    }
 +
 +    fn packages_to_content_metadata<'a>(
 +        packages: impl IntoIterator<Item = &'a alpm::Package>,
@@ -312,7 +346,8 @@ index f20e5e8..7061d21 100644
 +    where
 +        T: AsRef<Path>,
 +    {
-+        let handle = Alpm::new(sysroot_path, "/var/lib/pacman")?;
++        let db_path = get_pacman_dbpath(sysroot_path)?;
++        let handle = Alpm::new(sysroot_path, &db_path)?;
 +        let db = handle.localdb();
 +        find_packages(db, paths)
 +    }
@@ -321,7 +356,7 @@ index f20e5e8..7061d21 100644
  pub(crate) fn query_files<T>(
      sysroot_path: &str,
      paths: impl IntoIterator<Item = T>,
-@@ -86,19 +173,7 @@ pub(crate) fn query_files<T>(
+@@ -86,19 +208,7 @@ pub(crate) fn query_files<T>(
  where
      T: AsRef<Path>,
  {
